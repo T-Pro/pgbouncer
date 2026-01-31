@@ -145,6 +145,7 @@ bool empty_server_check_query;
 usec_t cf_server_check_delay;
 int cf_server_fast_close;
 int cf_server_round_robin;
+int cf_load_balancing_level;
 int cf_disable_pqexec;
 usec_t cf_dns_max_ttl;
 usec_t cf_dns_nxdomain_ttl;
@@ -255,6 +256,12 @@ const struct CfLookup load_balance_hosts_map[] = {
 	{ NULL }
 };
 
+const struct CfLookup load_balancing_level_map[] = {
+	{ "none", LOAD_BALANCING_NONE },
+	{ "pool", LOAD_BALANCING_POOL },
+	{ NULL }
+};
+
 /*
  * Add new parameters in alphabetical order. This order is used by SHOW CONFIG.
  */
@@ -308,6 +315,7 @@ static const struct CfKey bouncer_params [] = {
 	CF_ABS("max_user_connections", CF_INT, cf_max_user_connections, 0, "0"),
 	CF_ABS("min_pool_size", CF_INT, cf_min_pool_size, 0, "0"),
 	CF_ABS("peer_id", CF_INT, cf_peer_id, 0, "0"),
+	CF_ABS("load_balancing_level", CF_LOOKUP(load_balancing_level_map), cf_load_balancing_level, 0, "pool"),
 	CF_ABS("pidfile", CF_STR, cf_pidfile, CF_NO_RELOAD, ""),
 	CF_ABS("pkt_buf", CF_INT, cf_sbuf_len, CF_NO_RELOAD, "4096"),
 	CF_ABS("pool_mode", CF_LOOKUP(pool_mode_map), cf_pool_mode, 0, "session"),

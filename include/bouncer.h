@@ -149,6 +149,11 @@ enum LoadBalanceHosts {
 	LOAD_BALANCE_HOSTS_ROUND_ROBIN
 };
 
+enum LoadBalancingLevel {
+	LOAD_BALANCING_NONE,
+	LOAD_BALANCING_POOL
+};
+
 #define is_server_socket(sk) ((sk)->state >= SV_FREE)
 
 
@@ -852,6 +857,7 @@ extern usec_t cf_transaction_timeout;
 extern bool any_user_level_timeout_set;
 extern bool any_user_level_client_timeout_set;
 extern int cf_server_round_robin;
+extern int cf_load_balancing_level;
 extern int cf_disable_pqexec;
 extern usec_t cf_dns_max_ttl;
 extern usec_t cf_dns_nxdomain_ttl;
@@ -918,6 +924,7 @@ extern int cf_max_prepared_statements;
 
 extern const struct CfLookup pool_mode_map[];
 extern const struct CfLookup load_balance_hosts_map[];
+extern const struct CfLookup load_balancing_level_map[];
 
 extern usec_t g_suspend_start;
 

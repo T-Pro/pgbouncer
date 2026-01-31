@@ -86,3 +86,28 @@ def test_reboot_bias():
 def test_multiple_takeovers():
     """Multiple online restarts with new connections"""
     return "3*(R +1) =3a =0b"
+
+
+# --- Tests with load_balancing_level=none (pool balancing disabled) ---
+
+
+
+@scenario(load_balancing_level="none")
+def test_without_rebalance():
+    """Without pool balancing, no rebalancing occurs after disconnects.
+
+    When pool balancing is disabled and we disconnect from host b,
+    new connections take from the idle list (most recently returned server)
+    rather than being distributed to least-loaded host.
+    
+    After +4 we have 2a and 2b active. After -2b, those b servers go to
+    the idle list. New connections will reuse those idle b servers first.
+    """
+    return """
+        +8 =4a =4b # round-robin 
+        -4b        # closes connections on b, creates an imbalance.
+        -4a        # last into the pool (a)
+        +4a        # first out of the pool (a)
+        =4a =0b    # balance not guaranteed.
+    """
+

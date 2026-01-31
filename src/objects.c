@@ -734,7 +734,7 @@ static PgPool *new_pool(PgDatabase *db, PgCredentials *user_credentials)
 	statlist_init(&pool->being_canceled_server_list, "being_canceled_server_list");
 
 	/* Create socket pool for load balancing with multi-host databases */
-	if (db->host_pool && db->host_pool->count > 1)
+	if (cf_load_balancing_level == LOAD_BALANCING_POOL && db->host_pool && db->host_pool->count > 1)
 		pool->socket_pool = socketpool_create(db->host_pool->count);
 
 	list_append(&user_credentials->global_user->pool_list, &pool->map_head);

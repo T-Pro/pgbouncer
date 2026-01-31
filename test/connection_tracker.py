@@ -49,11 +49,12 @@ def get_server_addr_by_pid(bouncer, database, remote_pid):
 class BouncerConnectionChecker:
     """Interpreter for test scenario mini-language."""
 
-    def __init__(self, pg, tmp_path, database="pool_lb_test"):
+    def __init__(self, pg, tmp_path, database="pool_lb_test", load_balancing_level=None):
         self.pg = pg
         self.tmp_path = tmp_path
         self.bouncer = None
         self.database = database
+        self.load_balancing_level = load_balancing_level
         self.conns = []
         self.ops = []
         self.addr_to_letter = {}
@@ -73,6 +74,12 @@ class BouncerConnectionChecker:
             # Increase max_client_conn for tests that create many connections
             ini_content = ini_content.replace("max_client_conn = 10", "max_client_conn = 50")
             ini_content = ini_content.replace("[databases]\n", f"[databases]\n{db_entry}")
+            # Set load_balancing_level if specified
+            if self.load_balancing_level is not None:
+                ini_content = ini_content.replace(
+                    "logfile =",
+                    f"load_balancing_level = {self.load_balancing_level}\nlogfile ="
+                )
             with self.bouncer.ini_path.open("w") as f:
                 f.write(ini_content)
             await self.bouncer.start()
@@ -245,7 +252,7 @@ class BouncerConnectionChecker:
         return pos - 1
 
 
-def scenario(fn):
+def scenario(fn=None, *, load_balancing_level="pool"):
     """Decorator for mini-language test scenarios.
 
     Usage:
@@ -253,14 +260,26 @@ def scenario(fn):
         def test_name():
             '''Docstring describing the test'''
             return "+4 =2a =2b"
+
+        @scenario(load_balancing_level="none")
+        def test_without_balancing():
+            '''Test with pool balancing disabled'''
+            return "+4 =4a =0b"
     """
-    async def wrapper(pg, tmp_path):
-        runner = BouncerConnectionChecker(pg, tmp_path)
-        code = fn()
-        try:
-            await runner.run(code)
-        finally:
-            await runner.cleanup()
-    wrapper.__name__ = fn.__name__
-    wrapper.__doc__ = fn.__doc__
-    return wrapper
+    def decorator(fn):
+        async def wrapper(pg, tmp_path):
+            runner = BouncerConnectionChecker(pg, tmp_path, load_balancing_level=load_balancing_level)
+            code = fn()
+            try:
+                await runner.run(code)
+            finally:
+                await runner.cleanup()
+        wrapper.__name__ = fn.__name__
+        wrapper.__doc__ = fn.__doc__
+        return wrapper
+
+    if fn is not None:
+        # Called as @scenario without arguments
+        return decorator(fn)
+    # Called as @scenario(...) with arguments
+    return decorator
