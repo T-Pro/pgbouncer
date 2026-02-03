@@ -117,16 +117,89 @@ static void write_stats(PktBuf *buf, PgStats *stat, PgStats *old, char *dbname)
 			     avg.ps_server_parse_count, avg.ps_bind_count);
 }
 
+/*
+ * Write replay stats for a database.
+ * Uses same format as regular stats but fills in zeros for unsupported fields.
+ */
+static void write_replay_stats(PktBuf *buf, ReplayStats *stat, ReplayStats *old, char *dbname)
+{
+	/* Calculate average for replay stats */
+	ReplayStats avg;
+	usec_t dur = get_cached_time() - old_stamp;
+
+	memset(&avg, 0, sizeof(avg));
+
+	if (dur > 0) {
+		uint64_t query_count = stat->query_count - old->query_count;
+		uint64_t xact_count = stat->xact_count - old->xact_count;
+
+		avg.query_count = USEC * query_count / dur;
+		avg.xact_count = USEC * xact_count / dur;
+		avg.server_bytes = USEC * (stat->server_bytes - old->server_bytes) / dur;
+		avg.dropped_count = USEC * (stat->dropped_count - old->dropped_count) / dur;
+
+		if (query_count > 0)
+			avg.query_time = (stat->query_time - old->query_time) / query_count;
+	}
+
+	/* Write using same format - zeros for fields we don't track */
+	pktbuf_write_DataRow(buf, "sNNNNNNNNNNNNNNNNNNNNNN", dbname,
+			     (uint64_t)0,  /* server_assignment_count - not tracked */
+			     stat->xact_count, stat->query_count,
+			     (uint64_t)0,  /* client_bytes - not tracked */
+			     stat->server_bytes,
+			     (uint64_t)0,  /* xact_time - not tracked */
+			     stat->query_time,
+			     (uint64_t)0,  /* wait_time - not tracked */
+			     (uint64_t)0,  /* ps_client_parse_count - not tracked */
+			     (uint64_t)0,  /* ps_server_parse_count - not tracked */
+			     (uint64_t)0,  /* ps_bind_count - not tracked */
+			     (uint64_t)0,  /* avg server_assignment_count */
+			     avg.xact_count, avg.query_count,
+			     (uint64_t)0,  /* avg client_bytes */
+			     avg.server_bytes,
+			     (uint64_t)0,  /* avg xact_time */
+			     avg.query_time,
+			     (uint64_t)0,  /* avg wait_time */
+			     (uint64_t)0,  /* avg ps_client_parse_count */
+			     (uint64_t)0,  /* avg ps_server_parse_count */
+			     (uint64_t)0); /* avg ps_bind_count */
+}
+
+/*
+ * Helper to reset replay stats
+ */
+static void reset_replay_stats(ReplayStats *stat)
+{
+	memset(stat, 0, sizeof(*stat));
+}
+
+/*
+ * Helper to add replay stats
+ */
+static void replay_stat_add(ReplayStats *total, ReplayStats *stat)
+{
+	total->query_count += stat->query_count;
+	total->xact_count += stat->xact_count;
+	total->dropped_count += stat->dropped_count;
+	total->server_bytes += stat->server_bytes;
+	total->query_time += stat->query_time;
+}
+
 bool admin_database_stats(PgSocket *client, struct StatList *pool_list)
 {
 	PgPool *pool;
 	struct List *item;
 	PgDatabase *cur_db = NULL;
 	PgStats st_db, old_db;
+	ReplayStats replay_st_db, replay_old_db;
+	bool has_replay = false;
 	PktBuf *buf;
 
 	reset_stats(&st_db);
 	reset_stats(&old_db);
+	reset_replay_stats(&replay_st_db);
+	reset_replay_stats(&replay_old_db);
 
 	buf = pktbuf_dynamic(512);
 	if (!buf) {
@@ -156,17 +229,108 @@ bool admin_database_stats(PgSocket *client, struct StatList *pool_list)
 		if (pool->db != cur_db) {
 			write_stats(buf, &st_db, &old_db, cur_db->name);
 
+			/* Write replay stats if any */
+			if (has_replay) {
+				char replay_name[MAX_DBNAME + 8];
+				snprintf(replay_name, sizeof(replay_name), "replay-%s", cur_db->name);
+				write_replay_stats(buf, &replay_st_db, &replay_old_db, replay_name);
+			}
+
 			cur_db = pool->db;
 			reset_stats(&st_db);
 			reset_stats(&old_db);
+			reset_replay_stats(&replay_st_db);
+			reset_replay_stats(&replay_old_db);
+			has_replay = false;
 		}
 
 		stat_add(&st_db, &pool->stats);
 		stat_add(&old_db, &pool->older_stats);
+
+		/* Aggregate replay stats */
+		if (pool_has_replay(pool)) {
+			replay_stat_add(&replay_st_db, &pool->replay_stats);
+			replay_stat_add(&replay_old_db, &pool->replay_older_stats);
+			has_replay = true;
+		}
 	}
 	if (cur_db) {
 		write_stats(buf, &st_db, &old_db, cur_db->name);
+
+		/* Write replay stats if any */
+		if (has_replay) {
+			char replay_name[MAX_DBNAME + 8];
+			snprintf(replay_name, sizeof(replay_name), "replay-%s", cur_db->name);
+			write_replay_stats(buf, &replay_st_db, &replay_old_db, replay_name);
+		}
 	}
+	admin_flush(client, buf, "SHOW");
+
+	return true;
+}
+
+/*
+ * Show replay-specific stats for all databases with replay configured.
+ * Includes dropped_count which is not in regular stats.
+ */
+bool admin_replay_stats(PgSocket *client, struct StatList *pool_list)
+{
+	PgPool *pool;
+	struct List *item;
+	PgDatabase *cur_db = NULL;
+	ReplayStats replay_st_db;
+	bool has_replay = false;
+	PktBuf *buf;
+
+	reset_replay_stats(&replay_st_db);
+
+	buf = pktbuf_dynamic(512);
+	if (!buf) {
+		admin_error(client, "no mem");
+		return true;
+	}
+
+	pktbuf_write_RowDescription(buf, "sNNNNN", "database",
+				    "query_count", "xact_count",
+				    "bytes_sent", "query_time",
+				    "dropped_count");
+
+	statlist_for_each(item, pool_list) {
+		pool = container_of(item, PgPool, head);
+
+		if (cur_db != pool->db) {
+			/* Output previous database's replay stats */
+			if (has_replay && cur_db) {
+				pktbuf_write_DataRow(buf, "sNNNNN", cur_db->name,
+						     replay_st_db.query_count,
+						     replay_st_db.xact_count,
+						     replay_st_db.server_bytes,
+						     replay_st_db.query_time,
+						     replay_st_db.dropped_count);
+			}
+
+			cur_db = pool->db;
+			reset_replay_stats(&replay_st_db);
+			has_replay = false;
+		}
+
+		/* Aggregate replay stats for this pool */
+		if (pool->replay_stats.query_count > 0 || pool->replay_stats.dropped_count > 0) {
+			has_replay = true;
+			replay_stat_add(&replay_st_db, &pool->replay_stats);
+		}
+	}
+
+	/* Output last database's replay stats */
+	if (has_replay && cur_db) {
+		pktbuf_write_DataRow(buf, "sNNNNN", cur_db->name,
+				     replay_st_db.query_count,
+				     replay_st_db.xact_count,
+				     replay_st_db.server_bytes,
+				     replay_st_db.query_time,
+				     replay_st_db.dropped_count);
+	}
+
 	admin_flush(client, buf, "SHOW");
 
 	return true;

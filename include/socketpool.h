@@ -33,6 +33,11 @@ struct PgSocketPool {
 	int *invperm;
 	int *active_count;		/* array of active counts per host */
 	struct StatList *idle_lists;	/* array of idle lists per host */
+
+	/* Replay support - per-host tracking for O(1) lookup */
+	struct StatList *replay_idle_lists;	/* per-host replay idle lists */
+	struct StatList *replay_new_lists;	/* per-host replay new (login) lists */
+	int *replay_active_count;		/* per-host replay active count */
 };
 
 /* Create a socket pool for the given number of hosts */
@@ -55,5 +60,15 @@ void socketpool_remove_idle_server(PgSocketPool *pool, PgSocket *server);
 
 /* Get an idle server from the least-loaded host */
 PgSocket *socketpool_get_idle_server(PgSocketPool *pool);
+
+/* Replay support functions */
+void socketpool_init_replay(PgSocketPool *pool);
+void socketpool_add_replay_idle(PgSocketPool *pool, PgSocket *server);
+void socketpool_remove_replay_idle(PgSocketPool *pool, PgSocket *server);
+void socketpool_add_replay_new(PgSocketPool *pool, PgSocket *server);
+void socketpool_remove_replay_new(PgSocketPool *pool, PgSocket *server);
+void socketpool_inc_replay_active(PgSocketPool *pool, int host_index);
+void socketpool_dec_replay_active(PgSocketPool *pool, int host_index);
+PgSocket *socketpool_get_replay_idle(PgSocketPool *pool, int host_index);
 
 #endif

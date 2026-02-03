@@ -175,6 +175,7 @@ typedef struct ScramState ScramState;
 typedef struct PgPreparedStatement PgPreparedStatement;
 typedef enum ResponseAction ResponseAction;
 typedef enum ReplicationType ReplicationType;
+typedef struct ReplayQueueEntry ReplayQueueEntry;
 
 extern int cf_sbuf_len;
 
@@ -194,6 +195,7 @@ extern int cf_sbuf_len;
 #include "pooler.h"
 #include "proto.h"
 #include "objects.h"
+#include "replay.h"
 #include "stats.h"
 #include "takeover.h"
 #include "janitor.h"
@@ -344,6 +346,29 @@ struct PgStats {
 };
 
 /*
+ * Replay-specific stats
+ */
+typedef struct ReplayStats {
+	uint64_t query_count;		/* queries replayed */
+	uint64_t xact_count;		/* transactions replayed */
+	uint64_t dropped_count;		/* queries dropped due to queue full */
+	uint64_t server_bytes;		/* bytes sent to replay server */
+	usec_t query_time;		/* total query time on replay server */
+} ReplayStats;
+
+/*
+ * Entry in the replay queue - holds query data to be replayed.
+ */
+struct ReplayQueueEntry {
+	struct List node;		/* list linkage */
+	void *data;			/* packet data (malloc'd copy) */
+	int data_len;			/* length of packet data */
+	int host_index;			/* which replay host to target */
+	usec_t queued_time;		/* when queued, for timeout tracking */
+	bool is_transaction_end;	/* true if this is COMMIT/ROLLBACK */
+};
+
+/*
  * Contains connections for one db+user pair.
  *
  * Stats:
@@ -479,6 +504,20 @@ struct PgPool {
 	uint16_t rrcounter;		/* round-robin counter */
 
 	PgSocketPool *socket_pool;	/* pool-level load balancing (per db+user pair) */
+
+	/*
+	 * Replay support - for mirroring queries to secondary servers
+	 */
+	struct StatList replay_idle_server_list;	/* idle replay server connections */
+	struct StatList replay_active_server_list;	/* active replay server connections */
+	struct StatList replay_new_server_list;		/* replay servers in login phase */
+	struct List replay_queue;			/* pending queries to replay */
+	int replay_queue_count;				/* current queue size */
+	ReplayStats replay_stats;			/* stats for replay database */
+	ReplayStats replay_newer_stats;			/* snapshot for averaging */
+	ReplayStats replay_older_stats;			/* older snapshot */
+	usec_t replay_last_connect_time;		/* last replay connection attempt */
+	bool replay_last_connect_failed : 1;		/* did last replay connect fail */
 };
 
 /*
@@ -739,6 +778,10 @@ struct PgSocket {
 	char *host;		/* hostname for server connection */
 	int host_index;		/* index in host list, -1 if single host */
 
+	bool is_replay : 1;	/* true if this is a replay server connection */
+	int replay_host_index;	/* which replay host this connects to */
+	bool replay_in_transaction : 1;	/* replay server: currently in transaction */
+
 	union {
 		struct DNSToken *dns_token;	/* ongoing request */
 		PgDatabase *db;			/* cache db while doing auth query */
@@ -921,6 +964,9 @@ extern char *cf_server_tls_ciphers;
 extern char *cf_server_tls13_ciphers;
 
 extern int cf_max_prepared_statements;
+
+/* Replay configuration */
+extern int cf_replay_queue_size;	/* max queued replay queries globally */
 
 extern const struct CfLookup pool_mode_map[];
 extern const struct CfLookup load_balance_hosts_map[];

@@ -29,6 +29,8 @@ struct PgHost {
 	char *hostname;		/* hostname string */
 	int port;		/* port number */
 	int index;		/* position in host_pool->hosts array */
+	char *replay_hostname;	/* optional replay host for query replay */
+	int replay_port;	/* replay host port number */
 };
 
 /*
@@ -42,6 +44,10 @@ struct PgHostPool {
 /* Create a host with given hostname, port, and index */
 PgHost *hostpool_create_host(const char *hostname, int port, int index);
 
+/* Create a host with optional replay host (replay_hostname can be NULL) */
+PgHost *hostpool_create_host_with_replay(const char *hostname, int port, int index,
+					 const char *replay_hostname, int replay_port);
+
 /* Free a host */
 void hostpool_free_host(PgHost *host);
 
@@ -53,3 +59,9 @@ void hostpool_free(PgHostPool *pool);
 
 /* Parse comma-separated hosts into a host pool (NULL if single host) */
 PgHostPool *hostpool_parse(const char *host_str, int default_port);
+
+/* Count how many hosts in the pool have replay configured */
+int hostpool_replay_count(PgHostPool *pool);
+
+/* Check if database has any replay hosts configured */
+bool hostpool_has_replay(PgHostPool *pool);

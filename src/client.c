@@ -1671,6 +1671,21 @@ static bool handle_client_work(PgSocket *client, PktHdr *pkt)
 
 	sbuf_prepare_send(sbuf, &client->link->sbuf, pkt->len);
 
+	/*
+	 * Queue query for replay if replay is configured for this pool.
+	 * Capture packet data before parse_pos is advanced.
+	 */
+	if (pool_has_replay(client->pool) && client->link && client->link->host_index > 0) {
+		bool is_tx_end = (pkt->type == 'Q' || pkt->type == 'E');  /* Query or Execute might end tx */
+		/* Get the raw packet data from the iobuf - parse_pos points to packet start */
+		IOBuf *io = sbuf->io;
+		if (io && iobuf_amount_parse(io) >= (unsigned)pkt->len) {
+			const uint8_t *pkt_data = io->buf + io->parse_pos;
+			replay_queue_enqueue(client->pool, pkt_data, pkt->len,
+					     client->link->host_index, is_tx_end);
+		}
+	}
+
 	return true;
 }
 

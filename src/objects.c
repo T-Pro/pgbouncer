@@ -733,9 +733,16 @@ static PgPool *new_pool(PgDatabase *db, PgCredentials *user_credentials)
 	statlist_init(&pool->active_cancel_server_list, "active_cancel_server_list");
 	statlist_init(&pool->being_canceled_server_list, "being_canceled_server_list");
 
-	/* Create socket pool for load balancing with multi-host databases */
-	if (cf_load_balancing_level == LOAD_BALANCING_POOL && db->host_pool && db->host_pool->count > 1)
+	/* Initialize replay support */
+	replay_init_pool(pool);
+
+	/* Create socket pool for load balancing with multi-host databases, or when replay is configured */
+	if (db->host_pool && db->host_pool->count > 1 &&
+	    (cf_load_balancing_level == LOAD_BALANCING_POOL || hostpool_has_replay(db->host_pool))) {
 		pool->socket_pool = socketpool_create(db->host_pool->count);
+		if (pool->socket_pool && hostpool_has_replay(db->host_pool))
+			socketpool_init_replay(pool->socket_pool);
+	}
 
 	list_append(&user_credentials->global_user->pool_list, &pool->map_head);
 
@@ -1629,7 +1636,7 @@ void disconnect_client_sqlstate(PgSocket *client, bool notify, const char *sqlst
  * Connection creation utilities
  */
 
-static void connect_server(struct PgSocket *server, const struct sockaddr *sa, int salen)
+void connect_server(struct PgSocket *server, const struct sockaddr *sa, int salen)
 {
 	bool res;
 
@@ -1650,7 +1657,7 @@ static void connect_server(struct PgSocket *server, const struct sockaddr *sa, i
 		log_noise("failed to launch new connection");
 }
 
-static void dns_callback(void *arg, const struct sockaddr *sa, int salen)
+void dns_callback(void *arg, const struct sockaddr *sa, int salen)
 {
 	struct PgSocket *server = arg;
 	struct PgDatabase *db = server->pool->db;
@@ -1698,8 +1705,23 @@ static void dns_connect(struct PgSocket *server)
 	int res;
 	char *host_copy = NULL;
 
-	/* host list? */
-	if (db->host && strchr(db->host, ',')) {
+	/* Use host_pool if available (handles multi-host and replay syntax) */
+	if (db->host_pool) {
+		int count = db->host_pool->count;
+		int n;
+
+		if (server->pool->db->load_balance_hosts == LOAD_BALANCE_HOSTS_DISABLE && server->pool->last_connect_failed)
+			server->pool->rrcounter++;
+
+		n = server->pool->rrcounter % count;
+		host = db->host_pool->hosts[n]->hostname;
+
+		if (server->pool->db->load_balance_hosts == LOAD_BALANCE_HOSTS_ROUND_ROBIN)
+			server->pool->rrcounter++;
+
+		server->host_index = n + 1; /* 0 = unknown */
+	} else if (db->host && strchr(db->host, ',')) {
+		/* Legacy multi-host handling (no host_pool) */
 		int count = 1;
 		int n;
 

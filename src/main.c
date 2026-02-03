@@ -209,6 +209,9 @@ int cf_max_prepared_statements;
 
 int cf_scram_iterations;
 
+/* Replay configuration */
+int cf_replay_queue_size;
+
 /*
  * config file description
  */
@@ -324,6 +327,7 @@ static const struct CfKey bouncer_params [] = {
 	CF_ABS("query_wait_timeout", CF_TIME_USEC, cf_query_wait_timeout, 0, "120"),
 	CF_ABS("reserve_pool_size", CF_INT, cf_res_pool_size, 0, "0"),
 	CF_ABS("reserve_pool_timeout", CF_TIME_USEC, cf_res_pool_timeout, 0, "5"),
+	CF_ABS("replay_queue_size", CF_INT, cf_replay_queue_size, 0, "1000"),
 	CF_ABS("resolv_conf", CF_STR, cf_resolv_conf, CF_NO_RELOAD, ""),
 	CF_ABS("sbuf_loopcnt", CF_INT, cf_sbuf_loopcnt, 0, "5"),
 	CF_ABS("scram_iterations", CF_INT, cf_scram_iterations, 0, SCRAM_DEFAULT_ITERATIONS),

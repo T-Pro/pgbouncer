@@ -41,6 +41,33 @@ PgHost *hostpool_create_host(const char *hostname, int port, int index)
 
 	host->port = port;
 	host->index = index;
+	host->replay_hostname = NULL;
+	host->replay_port = 0;
+	return host;
+}
+
+/*
+ * Create a new PgHost with optional replay host.
+ * replay_hostname can be NULL if no replay is configured for this host.
+ */
+PgHost *hostpool_create_host_with_replay(const char *hostname, int port, int index,
+					 const char *replay_hostname, int replay_port)
+{
+	PgHost *host;
+
+	host = hostpool_create_host(hostname, port, index);
+	if (!host)
+		return NULL;
+
+	if (replay_hostname && *replay_hostname) {
+		host->replay_hostname = strdup(replay_hostname);
+		if (!host->replay_hostname) {
+			hostpool_free_host(host);
+			return NULL;
+		}
+		host->replay_port = replay_port;
+	}
+
 	return host;
 }
 
@@ -52,6 +79,7 @@ void hostpool_free_host(PgHost *host)
 	if (!host)
 		return;
 	free(host->hostname);
+	free(host->replay_hostname);
 	free(host);
 }
 
@@ -95,7 +123,8 @@ void hostpool_free(PgHostPool *pool)
 
 /*
  * Parse a comma-separated host string and create a PgHostPool.
- * Returns NULL if host is NULL, empty, or contains only one host (no commas).
+ * Supports replay hosts with & separator: host1&replay1,host2,host3&replay3
+ * Returns NULL if host is NULL, empty, or contains only one host (no commas or &).
  * The default_port is used for all hosts.
  */
 PgHostPool *hostpool_parse(const char *host_str, int default_port)
@@ -105,18 +134,21 @@ PgHostPool *hostpool_parse(const char *host_str, int default_port)
 	int count = 0;
 	int i = 0;
 	char *host_copy, *token, *saveptr;
+	bool has_replay = false;
 
 	if (!host_str || !*host_str)
 		return NULL;
 
-	/* Count commas to determine number of hosts */
+	/* Count commas to determine number of hosts, check for replay markers */
 	for (p = host_str; *p; p++) {
 		if (*p == ',')
 			count++;
+		if (*p == '&')
+			has_replay = true;
 	}
 
-	/* If no commas, single host - no need for host_pool */
-	if (count == 0)
+	/* If no commas and no replay, single host - no need for host_pool */
+	if (count == 0 && !has_replay)
 		return NULL;
 
 	count++;  /* number of hosts = commas + 1 */
@@ -133,11 +165,39 @@ PgHostPool *hostpool_parse(const char *host_str, int default_port)
 
 	token = strtok_r(host_copy, ",", &saveptr);
 	while (token && i < count) {
+		char *ampersand;
+		char *primary_host;
+		char *replay_host = NULL;
+		int replay_port = default_port;
+
 		/* Skip leading whitespace */
 		while (*token == ' ' || *token == '\t')
 			token++;
 
-		pool->hosts[i] = hostpool_create_host(token, default_port, i);
+		primary_host = token;
+
+		/* Check for replay host separator */
+		ampersand = strchr(token, '&');
+		if (ampersand) {
+			char *colon;
+			*ampersand = '\0';
+			replay_host = ampersand + 1;
+			/* Skip leading whitespace on replay host */
+			while (*replay_host == ' ' || *replay_host == '\t')
+				replay_host++;
+
+			/* Check for optional port in replay host (host:port syntax) */
+			colon = strchr(replay_host, ':');
+			if (colon) {
+				*colon = '\0';
+				replay_port = atoi(colon + 1);
+				if (replay_port <= 0)
+					replay_port = default_port;
+			}
+		}
+
+		pool->hosts[i] = hostpool_create_host_with_replay(
+			primary_host, default_port, i, replay_host, replay_port);
 		if (!pool->hosts[i]) {
 			free(host_copy);
 			hostpool_free(pool);
@@ -149,4 +209,30 @@ PgHostPool *hostpool_parse(const char *host_str, int default_port)
 
 	free(host_copy);
 	return pool;
+}
+
+/*
+ * Count how many hosts in the pool have replay configured.
+ */
+int hostpool_replay_count(PgHostPool *pool)
+{
+	int count = 0;
+	int i;
+
+	if (!pool)
+		return 0;
+
+	for (i = 0; i < pool->count; i++) {
+		if (pool->hosts[i] && pool->hosts[i]->replay_hostname)
+			count++;
+	}
+	return count;
+}
+
+/*
+ * Check if any host in the pool has replay configured.
+ */
+bool hostpool_has_replay(PgHostPool *pool)
+{
+	return hostpool_replay_count(pool) > 0;
 }

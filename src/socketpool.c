@@ -89,6 +89,9 @@ void socketpool_free(PgSocketPool *pool)
 	free(pool->idle_lists);
 	free(pool->perm);
 	free(pool->invperm);
+	free(pool->replay_idle_lists);
+	free(pool->replay_new_lists);
+	free(pool->replay_active_count);
 	free(pool);
 }
 
@@ -169,6 +172,135 @@ PgSocket *socketpool_get_idle_server(PgSocketPool *pool)
 			if (!server->close_needed && server->ready)
 				return server;
 		}
+	}
+	return NULL;
+}
+
+/*
+ * Initialize replay support arrays for a socket pool.
+ * Call after socketpool_create if replay is enabled.
+ */
+void socketpool_init_replay(PgSocketPool *pool)
+{
+	int i;
+	int total_buckets;
+
+	if (!pool)
+		return;
+
+	total_buckets = pool->host_count + 1;
+
+	pool->replay_idle_lists = calloc(total_buckets, sizeof(struct StatList));
+	pool->replay_new_lists = calloc(total_buckets, sizeof(struct StatList));
+	pool->replay_active_count = calloc(total_buckets, sizeof(int));
+
+	if (!pool->replay_idle_lists || !pool->replay_new_lists || !pool->replay_active_count) {
+		free(pool->replay_idle_lists);
+		free(pool->replay_new_lists);
+		free(pool->replay_active_count);
+		pool->replay_idle_lists = NULL;
+		pool->replay_new_lists = NULL;
+		pool->replay_active_count = NULL;
+		return;
+	}
+
+	for (i = 0; i < total_buckets; i++) {
+		statlist_init(&pool->replay_idle_lists[i], "replay_idle_list");
+		statlist_init(&pool->replay_new_lists[i], "replay_new_list");
+	}
+}
+
+/*
+ * Add replay server to its host's idle list using replay_host_index.
+ */
+void socketpool_add_replay_idle(PgSocketPool *pool, PgSocket *server)
+{
+	int host_idx;
+	if (!pool || !pool->replay_idle_lists || !server)
+		return;
+	host_idx = server->replay_host_index;
+	if (host_idx >= 0 && host_idx <= pool->host_count)
+		statlist_append(&pool->replay_idle_lists[host_idx], &server->head);
+}
+
+/*
+ * Remove replay server from its host's idle list.
+ */
+void socketpool_remove_replay_idle(PgSocketPool *pool, PgSocket *server)
+{
+	int host_idx;
+	if (!pool || !pool->replay_idle_lists || !server)
+		return;
+	host_idx = server->replay_host_index;
+	if (host_idx >= 0 && host_idx <= pool->host_count)
+		statlist_remove(&pool->replay_idle_lists[host_idx], &server->head);
+}
+
+/*
+ * Add replay server to its host's new (login) list.
+ */
+void socketpool_add_replay_new(PgSocketPool *pool, PgSocket *server)
+{
+	int host_idx;
+	if (!pool || !pool->replay_new_lists || !server)
+		return;
+	host_idx = server->replay_host_index;
+	if (host_idx >= 0 && host_idx <= pool->host_count)
+		statlist_append(&pool->replay_new_lists[host_idx], &server->head);
+}
+
+/*
+ * Remove replay server from its host's new list.
+ */
+void socketpool_remove_replay_new(PgSocketPool *pool, PgSocket *server)
+{
+	int host_idx;
+	if (!pool || !pool->replay_new_lists || !server)
+		return;
+	host_idx = server->replay_host_index;
+	if (host_idx >= 0 && host_idx <= pool->host_count)
+		statlist_remove(&pool->replay_new_lists[host_idx], &server->head);
+}
+
+/*
+ * Increment replay active count for a host.
+ */
+void socketpool_inc_replay_active(PgSocketPool *pool, int host_index)
+{
+	if (!pool || !pool->replay_active_count)
+		return;
+	if (host_index >= 0 && host_index <= pool->host_count)
+		pool->replay_active_count[host_index]++;
+}
+
+/*
+ * Decrement replay active count for a host.
+ */
+void socketpool_dec_replay_active(PgSocketPool *pool, int host_index)
+{
+	if (!pool || !pool->replay_active_count)
+		return;
+	if (host_index >= 0 && host_index <= pool->host_count)
+		pool->replay_active_count[host_index]--;
+}
+
+/*
+ * Get an idle replay server for the given host index - O(1) lookup.
+ */
+PgSocket *socketpool_get_replay_idle(PgSocketPool *pool, int host_index)
+{
+	struct List *item;
+	PgSocket *server;
+
+	if (!pool || !pool->replay_idle_lists)
+		return NULL;
+	if (host_index < 0 || host_index > pool->host_count)
+		return NULL;
+
+	statlist_for_each(item, &pool->replay_idle_lists[host_index]) {
+		server = container_of(item, PgSocket, head);
+		if (server->ready)
+			return server;
 	}
 	return NULL;
 }

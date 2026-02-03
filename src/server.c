@@ -207,6 +207,14 @@ static bool handle_server_startup(PgSocket *server, PktHdr *pkt)
 		slog_debug(server, "server login ok, start accepting queries");
 		server->ready = true;
 
+		/* Handle replay server login completion */
+		if (server->is_replay) {
+			slog_debug(server, "replay server login ok");
+			release_replay_server(server);
+			res = true;
+			break;
+		}
+
 		/* got all params */
 		finish_welcome_msg(server);
 
@@ -365,6 +373,30 @@ static bool handle_server_work(PgSocket *server, PktHdr *pkt)
 	bool ignore_packet = false;
 
 	Assert(!server->pool->db->admin);
+
+	/*
+	 * Handle replay servers specially - discard all results
+	 */
+	if (server->is_replay) {
+		/* For ReadyForQuery, check if transaction is complete */
+		if (pkt->type == PqMsg_ReadyForQuery) {
+			if (mbuf_get_char(&pkt->data, &state)) {
+				if (state == 'I') {
+					/* Idle - not in transaction, release server */
+					server->replay_in_transaction = false;
+					sbuf_prepare_skip(sbuf, pkt->len);
+					release_replay_server(server);
+					return true;
+				} else if (state == 'T' || state == 'E') {
+					/* Still in transaction */
+					server->replay_in_transaction = true;
+				}
+			}
+		}
+		/* Discard all packets from replay server */
+		sbuf_prepare_skip(sbuf, pkt->len);
+		return true;
+	}
 
 	switch (pkt->type) {
 	default:

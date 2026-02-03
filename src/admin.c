@@ -1591,7 +1591,7 @@ static bool admin_show_help(PgSocket *admin, const char *arg)
 		     "\tSHOW PEERS|PEER_POOLS\n"
 		     "\tSHOW FDS|SOCKETS|ACTIVE_SOCKETS|LISTS|MEM|STATE\n"
 		     "\tSHOW DNS_HOSTS|DNS_ZONES\n"
-		     "\tSHOW STATS|STATS_TOTALS|STATS_AVERAGES|TOTALS\n"
+		     "\tSHOW STATS|STATS_TOTALS|STATS_AVERAGES|REPLAY_STATS|TOTALS\n"
 		     "\tSET key = arg\n"
 		     "\tRELOAD\n"
 		     "\tPAUSE [<db>]\n"
@@ -1643,6 +1643,11 @@ static bool admin_show_stats_averages(PgSocket *admin, const char *arg)
 	return admin_database_stats_averages(admin, &pool_list);
 }
 
+static bool admin_show_replay_stats(PgSocket *admin, const char *arg)
+{
+	return admin_replay_stats(admin, &pool_list);
+}
+
 static bool admin_show_totals(PgSocket *admin, const char *arg)
 {
 	return show_stat_totals(admin, &pool_list);
@@ -1665,6 +1670,7 @@ static struct cmd_lookup show_map [] = {
 	{"stats", admin_show_stats},
 	{"stats_totals", admin_show_stats_totals},
 	{"stats_averages", admin_show_stats_averages},
+	{"replay_stats", admin_show_replay_stats},
 	{"users", admin_show_users},
 	{"version", admin_show_version},
 	{"totals", admin_show_totals},

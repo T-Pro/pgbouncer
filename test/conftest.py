@@ -219,6 +219,75 @@ async def bouncer_with_openldap(pg, tmp_path, monkeypatch):
     await bouncer.cleanup()
 
 
+@pytest.fixture(scope="module")
+def replay_pg(tmp_path_factory):
+    """Starts a separate Postgres instance for replay verification tests.
+    
+    This allows testing that queries executed on the primary are also
+    executed on the replay server by using two separate PostgreSQL instances.
+    """
+    pg = Postgres(tmp_path_factory.mktemp("replay_pgdata"))
+    pg.initdb()
+    os.truncate(pg.hba_path, 0)
+    pg.nossl_access("all", "trust")
+    pg.commit_hba()
+    pg.start()
+    
+    # Create same databases as primary
+    for i in range(8):
+        pg.sql(f"create database p{i}")
+    pg.sql("CREATE USER bouncer")
+    pg.sql("GRANT ALL ON SCHEMA public TO public", dbname="p0")
+    
+    # Create a table for replay verification
+    pg.sql("CREATE TABLE replay_verification(id serial, query_id text, ts timestamp default now())", dbname="p0")
+    pg.sql("GRANT ALL ON TABLE replay_verification TO public", dbname="p0")
+    pg.sql("GRANT ALL ON SEQUENCE replay_verification_id_seq TO public", dbname="p0")
+    
+    yield pg
+    
+    pg.cleanup()
+
+
+@pytest.fixture
+def replay_verification_table(pg):
+    """Creates the replay_verification table on the primary pg instance."""
+    pg.sql("DROP TABLE IF EXISTS replay_verification", dbname="p0")
+    pg.sql("CREATE TABLE replay_verification(id serial, query_id text, ts timestamp default now())", dbname="p0")
+    pg.sql("GRANT ALL ON TABLE replay_verification TO public", dbname="p0")
+    pg.sql("GRANT ALL ON SEQUENCE replay_verification_id_seq TO public", dbname="p0")
+    yield
+    pg.sql("DROP TABLE IF EXISTS replay_verification", dbname="p0")
+
+
+@pytest.fixture
+async def replay_bouncer(pg, replay_pg, tmp_path):
+    """Starts PgBouncer configured with primary and replay on different servers.
+    
+    Primary queries go to 'pg', replay queries go to 'replay_pg'.
+    The replay_verify database in test.ini uses REPLAY_PORT placeholder.
+    """
+    bouncer = Bouncer(pg, tmp_path / "bouncer")
+    
+    # Replace REPLAY_PORT placeholder with actual replay_pg port
+    with open(bouncer.ini_path, 'r') as f:
+        ini_content = f.read()
+    
+    ini_content = ini_content.replace('REPLAY_PORT', str(replay_pg.port))
+    
+    with open(bouncer.ini_path, 'w') as f:
+        f.write(ini_content)
+    
+    await bouncer.start()
+    
+    # Store replay_pg reference for tests
+    bouncer.replay_pg = replay_pg
+    
+    yield bouncer
+    
+    await bouncer.cleanup()
+
+
 @pytest.fixture(autouse=True)
 def pg_log(pg):
     """Prints the Postgres logs that were created during the test
