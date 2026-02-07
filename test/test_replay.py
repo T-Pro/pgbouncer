@@ -431,6 +431,50 @@ class TestReplayEndToEnd:
         assert replay_count == 1, \
             f"Transaction not replayed - expected 1 row on replay server, got {replay_count}"
 
+    def test_primary_continues_when_replay_crashes(self, replay_bouncer, replay_verification_table):
+        """Verify primary queries continue to work when replay instance crashes."""
+        import uuid
+        
+        # Step 1: Verify initial setup works
+        query_id_before = str(uuid.uuid4())
+        with replay_bouncer.conn(dbname="replay_verify") as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"INSERT INTO replay_verification(query_id) VALUES ('{query_id_before}')")
+        
+        time.sleep(0.3)
+        
+        # Verify it worked on primary
+        assert replay_bouncer.pg.sql_value(
+            f"SELECT count(*) FROM replay_verification WHERE query_id = '{query_id_before}'",
+            dbname="p0"
+        ) == 1
+        
+        # Step 2: Stop the replay PostgreSQL instance
+        replay_bouncer.replay_pg.stop()
+        
+        try:
+            # Step 3: Execute queries - should still work on primary
+            query_ids_during = []
+            for i in range(5):
+                qid = str(uuid.uuid4())
+                query_ids_during.append(qid)
+                with replay_bouncer.conn(dbname="replay_verify") as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(f"INSERT INTO replay_verification(query_id) VALUES ('{qid}')")
+            
+            # Step 4: Verify all queries succeeded on primary
+            for qid in query_ids_during:
+                count = replay_bouncer.pg.sql_value(
+                    f"SELECT count(*) FROM replay_verification WHERE query_id = '{qid}'",
+                    dbname="p0"
+                )
+                assert count == 1, f"Query {qid} should have succeeded on primary, got {count}"
+        
+        finally:
+            # Step 5: Restart replay instance for other tests
+            replay_bouncer.replay_pg.start()
+
+
 class TestReplayWithReboot:
     """Tests verifying replay functionality survives PgBouncer reboot."""
 
